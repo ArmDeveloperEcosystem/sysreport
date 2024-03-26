@@ -28,7 +28,7 @@ git clone https://github.com/ArmDeveloperEcosystem/sysreport.git
 
 Now change into the `src` directory:
 ```sh
-cd src
+cd sysreport/src
 ```
 
 To print usage help:
@@ -38,17 +38,17 @@ python sysreport.py --help
 
 Example usage:
 * System overview with increased verbosity:
-```sh
-python sysreport.py --verbose
-```
+  ```sh
+  python sysreport.py --verbose
+  ```
 * Check which kernel configuration options were set at build time:
-```sh
-python sysreport.py --config
-```
+  ```sh
+  python sysreport.py --config
+  ```
 * System overview with additional information about which security vulnerabilities the system is exposed to:
-```sh
-python sysreport.py --vulnerabilities
-```
+  ```sh
+  python sysreport.py --vulnerabilities
+  ```
 
 ## Learning Path
 
