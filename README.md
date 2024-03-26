@@ -1,6 +1,6 @@
 # System Capabilities Reporter
 
-Sysreport is a system capability reporting tool that gives application developers a quick summary of what performance features are available on the system the tool is running on.
+Sysreport is a system capability reporting tool that gives application developers a quick summary of what performance features are available on the Linux system the tool is running on.
 
 This tool is aimed at anyone trying to profile performance on Arm-based systems; this includes cloud instances, bare metal servers, and small devices such as developer boards and Raspberry Pi devices.
 
@@ -10,8 +10,8 @@ Sysreport is not a benchmarking tool and does not modify the system in any way.
 
 This tool aims to:
 * Report system configuration in a way that is focused on performance analysis, list which performance tools and features are available
-* Give useful advice on what you might do to improve your configuration for performance analysis, linking to Arm Learning Paths where possible
-* Try its best to run on any system (bare metal vs VM vs container, different operating systems and kernels, root vs non-root access, etc.)
+* Give useful advice on what you might do to improve your configuration for performance analysis
+* Run on any system (bare metal vs VM vs container, different operating systems and kernels, root vs non-root access, etc.)
 * Save the user from having to read multiple pages of documentation to understand what individual commands to run to gather everything they need
 
 Example use cases:
@@ -21,20 +21,38 @@ Example use cases:
 
 ## Usage
 
-Clone this git repository (or copy the repository contents) onto the target system for evaluation.
+Clone this git repository (or copy the repository contents) onto the target system for evaluation:
+```sh
+git clone https://github.com/ArmDeveloperEcosystem/sysreport.git
+```
 
-Now cd into the src directory.
+Now change into the `src` directory:
+```sh
+cd src
+```
 
 To print usage help:
-    python sysreport.py --help
+```sh
+python sysreport.py --help
+```
 
 Example usage:
 * System overview with increased verbosity:
-    python sysreport.py --verbose
+```sh
+python sysreport.py --verbose
+```
 * Check which kernel configuration options were set at build time:
-    python sysreport.py --config
+```sh
+python sysreport.py --config
+```
 * System overview with additional information about which security vulnerabilities the system is exposed to:
-    python sysreport.py --vulnerabilities
+```sh
+python sysreport.py --vulnerabilities
+```
+
+## Learning Path
+
+Check out the [Arm Learning Path](https://learn.arm.com/learning-paths/servers-and-cloud-computing/sysreport) for this tool.
 
 ## Compatibility
 
