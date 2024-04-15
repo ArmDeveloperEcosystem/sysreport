@@ -60,7 +60,7 @@ You can use this to discover the specification of a remote system:
 
 from __future__ import print_function
 
-import platform, sys, os, itertools
+import platform, sys, os, itertools, re
 
 o_verbose = 0
 
@@ -452,7 +452,8 @@ ARM_implementer = {
     0x50: ("APM",       {}),
     0x51: ("Qualcomm",  {}),
     0x56: ("Marvell",   {}),
-    0x69: ("Intel",     {})
+    0x69: ("Intel",     {}),
+    0x6d: ("Microsoft", {0xd49: "Cobalt 100"}),
 }
 
 
@@ -487,7 +488,7 @@ class CPU:
         return 1 << self.cpuno
 
     def sysfs(self):
-        s = "/sys/devices/system/cpu/cpu" + int(self.cpuno)
+        s = "/sys/devices/system/cpu/cpu" + str(self.cpuno)
         assert os.path.isdir(s)
         return s
 
@@ -613,7 +614,7 @@ class System:
         self.max_cpuno = 0
         self.n_cpus_online = 0
         self.cpus_by_core = {}        # map 'core_id' -> CPU
-        self.cpus_by_node = {}        # map NUMA node number -> CPU
+        self.numa_nodes = {}          # each NUMA node is a tuple of: (size, cpu list)
         self.cpus_by_package = {}
         self.groups_by_cpumask = {}
         allcpu_mask = 0
@@ -711,9 +712,10 @@ class System:
             if not os.path.exists(node):
                 # Maybe built with CONFIG_NUMA=n
                 break
-            node_cpus = intmask_list(cpusetstr_mask(file_word(node + "/cpulist")))
-            self.cpus_by_node[n] = node_cpus
-            for i in node_cpus:
+            size = int(re.search(r"MemTotal:\s*([0-9]*)", file_word(node + "/meminfo")).group(1))
+            cpu_list = intmask_list(cpusetstr_mask(file_word(node + "/cpulist")))
+            self.numa_nodes[n] = (size, cpu_list)
+            for i in cpu_list:
                 c = self.cpus_by_number[i]
                 c.numa_node = n
         self.top = self.group(allcpu_mask)
@@ -826,7 +828,7 @@ class System:
         Number of NUMA nodes. Sometimes corresponds to packages, but not always.
         If the kernel has been built with CONFIG_NUMA=n, this will return 0.
         """
-        return len(self.cpus_by_node)
+        return len(self.numa_nodes)
 
     def n_packages(self):
         """
