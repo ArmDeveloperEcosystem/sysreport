@@ -1,0 +1,56 @@
+diff --git a/.gitignore b/.gitignore
+index 27009d8..b696c12 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,2 +1,3 @@
+ /venv
+ __pycache__
++*.bak
+diff --git a/src/sysreport.py b/src/sysreport.py
+index 1659bcc..7e06bb5 100755
+--- a/src/sysreport.py
++++ b/src/sysreport.py
+@@ -33,7 +33,7 @@ Similar to lscpu, but
+ 
+ from __future__ import print_function
+ 
+-import os, sys, platform, subprocess, multiprocessing, json, datetime, struct
++import os, sys, platform, subprocess, multiprocessing, json, datetime, struct, ctypes
+ 
+ # import gzip for reading /proc/config.gz
+ try:
+@@ -384,6 +384,25 @@ class System:
+             assert n1 == n2, "mismatch on number of CPUs: %s vs %s" % (n1, n2)
+         return n1
+ 
++    def has_32bit(self):
++        """
++        Test whether this system can run 32-bit executables. On Arm this requires
++        AArch32 EL0 support in hardware as well as CONFIG_COMPAT in the kernel.
++        """
++        if _is_arm:
++            personality = ctypes.CDLL(None).personality
++            personality.restype = ctypes.c_int
++            personality.argtypes = [ctypes.c_ulong]
++            PER_LINUX32 = 8
++            oper = personality(PER_LINUX32)
++            if oper != -1:
++                personality(oper)    # restore previous personality
++                return True
++            else:
++                return False
++        else:
++            return self.kernel_config_enabled("CONFIG_COMPAT")
++
+     def irqs(self):
+         """
+         Arm: get the IRQ numbers for performance features. This tells us whether
+@@ -957,7 +976,7 @@ def show(s):
+     print("OS configuration:")
+     print("  Kernel:              %s" % (s.get_kernel_version()))
+     print("  config:              %s" % (colorize(kernel_config_file())))
+-    #print("  32-bit support:      %s" % (colorize(s.kernel_config_enabled("CONFIG_COMPAT"))))
++    print("  32-bit support:      %s" % (colorize(s.has_32bit())))
+     print("  build dir:           %s" % (colorize(kernel_build_dir())))
+     print("  uses atomics:        %s" % (colorize(kernel_uses_atomics(s))))
+     print("  huge pages:          %s" % (kernel_hugepages_str(s)))

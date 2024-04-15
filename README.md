@@ -1,12 +1,12 @@
 # System Capabilities Reporter
 
-Sysreport is a system capability reporting tool that gives application developers a quick summary of what performance features are available on the Linux system the tool is running on.
+Sysreport is a system capability reporting tool that gives application developers a quick summary of how the system is configured and what performance features are available, on the Linux system the tool is running on.
 
 This tool is aimed at anyone trying to profile performance on Arm-based systems; this includes cloud instances, bare metal servers, and small devices such as developer boards and Raspberry Pi devices.
 
 The tool is invoked on the command-line and takes about a second to run. It displays a single page of output in text format.
 
-Sysreport is not a benchmarking tool and does not modify the system in any way.
+Sysreport is not a benchmarking tool and does not modify the system in any way. It is also not intended to report current system status, only system configuration.
 
 This tool aims to:
 * Report system configuration in a way that is focused on performance analysis, list which performance tools and features are available
