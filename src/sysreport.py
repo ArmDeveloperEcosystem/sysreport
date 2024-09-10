@@ -34,6 +34,7 @@ Similar to lscpu, but
 from __future__ import print_function
 
 import os, sys, platform, subprocess, multiprocessing, json, datetime, struct
+
 # import gzip for reading /proc/config.gz
 try:
     import gzip
@@ -131,6 +132,9 @@ def run_cmd(cmd):
     args = cmd.split()
     p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     (out, err) = p.communicate()
+    if o_verbose:
+        print("#o# %s" % (out), file=sys.stderr)
+        print("#e# %s" % (err), file=sys.stderr)
     return (out, err)
 
 
@@ -242,6 +246,7 @@ _arm_cpu_arch = {
     (0x41, 0xd40): (8, 4),   # Neoverse V1
     (0x41, 0xd49): (9, 0),   # Neoverse N2
     (0x41, 0xd4f): (9, 0),   # Neoverse V2
+    (0x6d, 0xd49): (9, 0),   # Azure Cobalt 100
 }
 
 def arm_arch(s):
@@ -312,6 +317,9 @@ class System:
         except Exception:
             s = "<unknown>"
         return s
+
+    def is_ACPI(self):
+        return boot_info_type() == "ACPI"
 
     def get_kernel_version(self):
         """
@@ -515,15 +523,45 @@ def pyperf_installed():
 g_perf_installed = None
 
 
+def is_exec_shell_script(file):
+    """
+    Returns a boolean indicating whether the specified file is an executable
+    shell script or not.
+    """
+    is_script = False
+    if not os.path.exists(file):
+        return False
+    with open(file, "rb") as f:
+        bytes = f.read(2)
+        if bytes == b"#!" and os.access(file, os.X_OK):
+            is_script = True
+    return is_script
+
+
 def perf_binary():
     """
     Get the canonical location of the perf binary. This might not exist.
+
+    /usr/bin/perf is usually a redirector script, but it's possible that perf
+    was built by hand and copied to this location.
+
+    # If $PATH contains a redirector script, return the actual install path.
+    # Otherwise assume it's a user-installed binary and honour that path.
     """
-    return "/usr/lib/linux-tools/" + platform.release() + "/perf"
+    cmd = "which perf"
+    (out, err) = run_cmd(cmd)
+    path = out.decode().strip()
+    if is_exec_shell_script(path):
+        return "/usr/lib/linux-tools/" + platform.release() + "/perf"
+    else:
+        return path
 
 
 def perf_binary_imports(lib):
-    p = subprocess.Popen(["ldd", perf_binary()], stdout=subprocess.PIPE)
+    perf_bin = perf_binary()
+    if not os.path.exists(perf_bin):
+        return False
+    p = subprocess.Popen(["ldd", perf_bin], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     (out, err) = p.communicate()
     return lib in out.decode()
 
@@ -539,7 +577,9 @@ def perf_installed():
     global g_perf_installed
     if g_perf_installed is not None:
         return g_perf_installed
-    rc = os.system("perf stat -- true >/dev/null 2>/dev/null")
+    # Run a very simple "perf" subcommand - don't use "perf stat" as this may fail
+    # for unprivileged due to security settings, even if events are available.
+    rc = os.system("perf config >/dev/null 2>/dev/null")
     g_perf_installed = (rc == 0)
     return rc == 0
 
@@ -702,6 +742,9 @@ def kernel_hugepages(s, skip_zero=False):
     """
     # return file_int("/proc/sys/vm/nr_hugepages")
     hpdir = "/sys/kernel/mm/hugepages"
+    if not os.path.exists(hpdir):
+        return
+
     for d in os.listdir(hpdir):
         if not d.startswith("hugepages-"):
             continue
@@ -712,7 +755,10 @@ def kernel_hugepages(s, skip_zero=False):
 
 
 def kernel_hugepages_str(s, skip_zero=False):
-    return ", ".join(["%s: %u" % (sz, nr) for (sz, nr) in kernel_hugepages(s, skip_zero=skip_zero)])
+    huge_pages = list(kernel_hugepages(s, skip_zero=skip_zero))
+    if huge_pages:
+        return ", ".join(["%s: %u" % (sz, nr) for (sz, nr) in huge_pages])
+    return "disabled"
 
 
 def kernel_thp(s):
@@ -812,11 +858,12 @@ def advice(s):
         #   Amazon Linux: "yum install perf"
         yield ("perf tools not installed", ["install perf package (see https://learn.arm.com/install-guides/perf)", "or build from kernel sources"])
     else:
+        # ensure perf is built with OpenCSD
         if _is_arm and not perf_binary_has_opencsd():
             yield ("perf tools cannot decode hardware trace", ["build with CORESIGHT=1"])
     if perf_event_paranoid() > 0:
         yield ("System-level events can only be monitored by privileged users", ["sysctl kernel.perf_event_paranoid=0"])
-    if not s.perf_max_counters():
+    if perf_event_paranoid() <= 3 and not s.perf_max_counters():
         corrs = []
         if _is_arm and not s.has_irq("PMU"):
             corrs.append("ensure APIC table describes PMU interrupt")
@@ -836,6 +883,8 @@ def advice(s):
             corrs = []
             if not perf_noninvasive_sampling(s):
                 # CPU has SPE, but apparently not available in perf
+                if s.is_KPTI_enabled():
+                    corrs.append("disable kernel page-table isolation: boot with kpti=off")
                 if not s.has_irq("SPE"):
                     corrs.append("ensure APIC table describes SPE interrupt")
                 ck = s.get_kernel_config("CONFIG_ARM_SPE_PMU")
@@ -854,14 +903,15 @@ def advice(s):
         # advice for v9:
         #  - describe TRBE interrupt in ACPI APIC (or DT equivalent)
         #  - rebuild with CONFIG_CORESIGHT
-        # for both: ensure perf is built with OpenCSD
         if not s.kernel_config_enabled("CONFIG_CORESIGHT"):
             corrs.append("rebuild kernel with CONFIG_CORESIGHT")
         if s.is_arm_architecture(9):
-            if not s.has_irq("TRBE"):
-                corrs.append("ensure APIC table describes TRBE interrupt")
+            if s.is_ACPI():
+                if not s.has_irq("TRBE"):
+                    corrs.append("ensure APIC table describes TRBE interrupt")
         else:
-            corrs.append("ensure ACPI describes CoreSight trace fabric")
+            if s.is_ACPI():
+                corrs.append("ensure ACPI describes CoreSight trace fabric")
         yield ("hardware trace not enabled", corrs)
 
 
@@ -897,16 +947,19 @@ def show(s):
     print("  Atomic operations:   %s" % (colorize(has_atomics(s.system))))
     (itype, n) = s.system_interconnect()
     print("  interconnect:        %s x %u" % (colorize(itype), n))
-    print("  NUMA nodes:          %u" % (s.system.n_nodes()), end="")
+    n_nodes = s.system.n_nodes()
+    print("  NUMA nodes:          %u" % n_nodes)
     if not s.kernel_config_enabled("CONFIG_NUMA"):
         print(" (CONFIG_NUMA=n)", end="")
-    print()
+    if n_nodes > 1:
+        for node in range(n_nodes):
+            print("    node %u:            size: %10skB, cpu_list: %s" % (node, s.system.numa_nodes[node][0], s.system.numa_nodes[node][1]))
     print("  Sockets:             %u" % (s.system.n_packages()))
     # Kernel features
     print("OS configuration:")
     print("  Kernel:              %s" % (s.get_kernel_version()))
     print("  config:              %s" % (colorize(kernel_config_file())))
-    print("  32-bit support:      %s" % (colorize(s.kernel_config_enabled("CONFIG_COMPAT"))))
+    #print("  32-bit support:      %s" % (colorize(s.kernel_config_enabled("CONFIG_COMPAT"))))
     print("  build dir:           %s" % (colorize(kernel_build_dir())))
     print("  uses atomics:        %s" % (colorize(kernel_uses_atomics(s))))
     print("  huge pages:          %s" % (kernel_hugepages_str(s)))
@@ -917,17 +970,16 @@ def show(s):
     print("  Distribution:        %s" % (s.get_distribution()))
     print("  libc version:        %s" % (s.get_libc_version()))
     print("  boot info:           %s" % (colorize(boot_info_type())))
-    print("  KPTI enabled:        %s" % (colorize(s.is_KPTI_enabled(), invert=True)))
+    print("  KPTI enforced:       %s" % (s.is_KPTI_enabled()))
     print("  Lockdown:            %s" % (lockdown_str(s.get_lockdown())))
     print("  Mitigations:         %s" % (vulnerabilities_str(s.vulnerabilities())))
     # Perf features
     print("Performance features:")
-    print("  perf tools:          %s" % (colorize(perf_installed())))
-    print("  perf installed at:   %s" % (perf_binary()), end="")
-    if not os.path.exists(perf_binary()):
-        print(colorize(" (does not exist)", "red"), end="")
-    print()
-    print("  perf with OpenCSD:   %s" % (colorize_greenred(perf_binary_has_opencsd())))
+    perf_inst = perf_installed()
+    print("  perf tools:          %s" % (colorize(perf_inst)))
+    if perf_inst:
+        print("  perf installed at:   %s" % (perf_binary()))
+    print("  perf with OpenCSD:   %s" % (colorize(perf_binary_has_opencsd())))
     print("  perf counters:       %s" % (s.perf_max_counters()))
     print("  perf sampling:       %s" % (colorize_greenred(perf_noninvasive_sampling(s))))
     print("  perf HW trace:       %s" % (colorize_greenred(perf_hardware_trace(s))))
