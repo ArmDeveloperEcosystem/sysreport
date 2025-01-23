@@ -18,6 +18,12 @@ jobs:
       - uses: actions/checkout@v4
       - run: src/cpulist.py ${{ matrix.options }}
 
+  test_hugepages:
+        runs-on: ubuntu-24.04-arm
+        steps:
+          - uses: actions/checkout@v4
+          - run: src/hugepages.py
+
   test_sysreport:
     runs-on: ubuntu-24.04-arm
     strategy:
