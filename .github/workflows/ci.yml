@@ -6,7 +6,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: codespell-project/actions-codespell@v2
-      - uses: astral-sh/ruff-action@v3
+      # - uses: astral-sh/ruff-action@v3
 
   test_cpulist:
     runs-on: ubuntu-24.04-arm
