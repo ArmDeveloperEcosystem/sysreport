@@ -16,6 +16,7 @@ jobs:
         options: [ "--help", "", "--verbose", "--compact", "--cache", "--cpus", "--features", "--check" ]
     steps:
       - uses: actions/checkout@v4
+      - run: python -m pip install --user pyperf
       - run: src/cpulist.py ${{ matrix.options }}
 
   test_hugepages:
