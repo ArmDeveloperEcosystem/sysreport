@@ -1,0 +1,29 @@
+name: ci
+on: [pull_request, push]
+jobs:
+  codespell_and_ruff:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: codespell-project/actions-codespell@v2
+      - uses: astral-sh/ruff-action@v3
+
+  test_cpulist:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        options: [ "--help", "", "--verbose", "--compact", "--cache", "--cpus", "--features", "--check" ]
+    steps:
+      - uses: actions/checkout@v4
+      - run: src/cpulist.py ${{ matrix.options }}
+
+  test_sysreport:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        options: [ "--help", "", "--verbose", "--config", "--vulnerabilities" ]
+    steps:
+      - uses: actions/checkout@v4
+      - run: src/sysreport.py ${{ matrix.options }}
