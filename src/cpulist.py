@@ -60,13 +60,17 @@ You can use this to discover the specification of a remote system:
 
 from __future__ import print_function
 
-import platform, sys, os, itertools, re
+import itertools
+import os
+import platform
+import re
+import sys
 
 o_verbose = 0
 
 
 try:
-    from pyperf.perf_util import *
+    from pyperf.perf_util import list_cpusetstr
     check_cpusetstr = True
 except ImportError:
     def file_word(fn):

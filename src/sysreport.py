@@ -33,7 +33,13 @@ Similar to lscpu, but
 
 from __future__ import print_function
 
-import os, sys, platform, subprocess, multiprocessing, json, datetime, struct
+import datetime
+import multiprocessing
+import os
+import platform
+import struct
+import subprocess
+import sys
 
 # import gzip for reading /proc/config.gz
 try:
@@ -42,11 +48,10 @@ except ImportError:
     pass
 
 import cpulist
-
 import strcolor
 from strcolor import colorize
 
-_is_arm = (platform.machine() in ["armv8l", "aarch64"])
+_is_arm = platform.machine() in ("armv8l", "aarch64")
 
 o_verbose = 0
 
@@ -214,7 +219,7 @@ def acpi_irqs():
         irqs = {}
         with open("/sys/firmware/acpi/tables/APIC", "rb") as f:
             f.read(4)          # signature (b"APIC")
-            hdr = f.read(32)   # general ACPI header
+            _hdr = f.read(32)   # general ACPI header
             f.read(8)          # APIC
             while True:
                 ih = f.read(2)
@@ -508,7 +513,9 @@ def pyperf_installed():
     """
     try:
         sys.path.append(os.path.join(os.path.dirname(__file__), "pyperf"))
-        import perf_enum, perf_attr, perf_events
+        import perf_attr
+        import perf_enum
+        import perf_events
     except ImportError:
         return None   # unknown
     try:
