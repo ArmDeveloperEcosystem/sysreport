@@ -60,13 +60,19 @@ You can use this to discover the specification of a remote system:
 
 from __future__ import print_function
 
-import platform, sys, os, itertools, re
+
+import sys
+import os
+import platform
+import itertools
+import re
+
 
 o_verbose = 0
 
 
 try:
-    from pyperf.perf_util import *
+    from pyperfevents.perf_util import *
     check_cpusetstr = True
 except ImportError:
     def file_word(fn):
@@ -95,6 +101,8 @@ except ImportError:
     def cpusetstr_mask(s):
         m = 0
         for r in s.split(','):
+            if not r:
+                continue
             if '-' in r:
                 (lo,hi) = r.split('-')
                 m |= ((1 << (int(hi)+1)) - (1 << int(lo)))
@@ -102,8 +110,27 @@ except ImportError:
                 m |= (1 << int(r))
         return m
     def mask_cpusetstr(m):
-        # TBD: doesn't compact ranges: 0xF should be "0-3" not "0,1,2,3"
-        return str(intmask_list(m))[1:-1]
+        if m == 0:
+            return ""
+        s = ""
+        i = 0
+        while m >= (1 << i):
+            if (m & (1 << i)) != 0:
+                if s:
+                    s += ","
+                s += "%u" % i
+                if (m & (1 << (i+1))) != 0:
+                    s += "-"
+                    while (m & (1 << i)) != 0:
+                        i += 1
+                    s += "%u" % (i-1)
+                else:
+                    i += 1
+            else:
+                i += 1
+        return s
+    def list_cpusetstr(x):
+        return mask_cpusetstr(intlist_mask(x))
     check_cpusetstr = False
 
 
@@ -402,7 +429,7 @@ def read_sys_cpus():
     if not os.path.exists(devdir):
         # /sys/devices/system/cpu contains the CPU nodes plus other stuff
         devdir = "/sys/devices/system/cpu"
-        assert os.path.exists(devdir)
+        assert os.path.exists(devdir), "missing CPU: %s" % devdir
     for d in os.listdir(devdir):
         if not (d.startswith("cpu") and len(d) >= 4 and d[3].isdigit()):
             continue
@@ -419,10 +446,14 @@ ARM_ARM_cpuid_map = {
     0xd03: "Cortex-A53",
     0xd07: "Cortex-A57",
     0xd08: "Cortex-A72",
+    0xd0b: "Cortex-A76",
     0xd0c: "Neoverse N1",
     0xd40: "Neoverse V1",
     0xd49: "Neoverse N2",
     0xd4f: "Neoverse V2",
+    0xd83: "Neoverse V3AE",
+    0xd84: "Neoverse V3",
+    0xd8e: "Neoverse N3",
 }
 
 ARM_experimental_cpuid_map = {
