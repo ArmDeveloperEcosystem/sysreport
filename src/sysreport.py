@@ -33,7 +33,16 @@ Similar to lscpu, but
 
 from __future__ import print_function
 
-import os, sys, platform, subprocess, multiprocessing, json, datetime, struct
+
+import sys
+import os
+import platform
+import subprocess
+import multiprocessing
+import json
+import datetime
+import struct
+
 
 # import gzip for reading /proc/config.gz
 try:
@@ -81,6 +90,9 @@ def colorize_abled(s):
 
 def is_superuser():
     return os.geteuid() == 0
+
+
+CAP_PERFMON = 38
 
 
 def kernel_config_file():
@@ -242,10 +254,14 @@ _arm_cpu_arch = {
     (0x41, 0xd03): (8, 0),   # Cortex-A53
     (0x41, 0xd07): (8, 0),   # Cortex-A57
     (0x41, 0xd08): (8, 0),   # Cortex-A72
+    (0x41, 0xd0b): (8, 2),   # Cortex-A76
     (0x41, 0xd0c): (8, 2),   # Neoverse N1
     (0x41, 0xd40): (8, 4),   # Neoverse V1
     (0x41, 0xd49): (9, 0),   # Neoverse N2
     (0x41, 0xd4f): (9, 0),   # Neoverse V2
+    (0x41, 0xd83): (9, 2),   # Neoverse V3AE
+    (0x41, 0xd84): (9, 2),   # Neoverse V3
+    (0x41, 0xd8e): (9, 2),   # Neoverse N3
     (0x6d, 0xd49): (9, 0),   # Azure Cobalt 100
 }
 
@@ -275,6 +291,7 @@ class System:
         self.cached_vulnerabilities = None
         self.cached_irqs = None
         self._perf_max_counters = None
+        self._capabilities = None
 
     def cpu_types(self):
         """
@@ -360,6 +377,20 @@ class System:
         mdir = "/lib/modules/" + platform.release()
         return find_file_in_tree(mdir, ko)
 
+    def capabilities(self):
+        if self._capabilities is None:
+            with open("/proc/self/status") as f:
+                for ln in f:
+                    if ln.startswith("CapEff:"):
+                        self._capabilities = int(ln.split()[1], 16)
+                        break
+            if self._capabilities is None:
+                self._capabilities = 0
+        return self._capabilities
+
+    def has_cap(self, cap):
+        return (self.capabilities() & (1 << cap)) != 0
+
     def get_cache_line_size(self):
         """
         Even if cache info isn't available under /sys/bus/cpu, we ought to be
@@ -437,6 +468,14 @@ class System:
             ld = ld.split(',')
         return ld
 
+    _acpi_interconnects = {
+        "ARMHC600": "CMN-600",
+        "ARMHC650": "CMN-650",
+        "ARMHC700": "CMN-700",
+        "ARMHC800": "CMN S3",
+        "ARMHC003": "CMN S3",
+    }
+
     def system_interconnect(self):
         """
         Check if this system has an Arm CMN interconnect, by looking at /proc/iomem.
@@ -447,8 +486,8 @@ class System:
         n = 1
         for a in iomem_areas(toplevel=True):
             a = a.split(':')[0]
-            if a in ["ARMHC600", "ARMHC650", "ARMHC700"]:
-                t = "CMN-" + a[5:]
+            if a in self._acpi_interconnects:
+                t = self._acpi_interconnects[a]
                 if itype is None:
                     itype = t
                 elif t == itype:
@@ -467,13 +506,19 @@ class System:
             return True
         # Otherwise, scan for interconnects.
         (ic, n) = self.system_interconnect()
-        return ic is not None and ic.startswith("CMN-")
+        return ic is not None and ic.startswith("CMN")
 
     def has_MPAM(self):
         return self.get_kernel_config("CONFIG_MPAM") == "y"
 
     def has_resctrl(self):
         return os.path.exists("/sys/fs/resctrl")
+
+    def is_in_container(self):
+        """
+        Check if we're in a Docker container or similar.
+        """
+        return file_data("/proc/1/comm") != "systemd"
 
     def cpu_has_SPE(self):
         """
@@ -570,7 +615,7 @@ def perf_binary_has_opencsd():
     return perf_binary_imports("libopencsd.so")
 
 
-def perf_installed():
+def perf_tools_installed():
     """
     Check whether perf command-line tools are installed.
     """
@@ -582,6 +627,32 @@ def perf_installed():
     rc = os.system("perf config >/dev/null 2>/dev/null")
     g_perf_installed = (rc == 0)
     return rc == 0
+
+
+def perf_cpu_pmu():
+    for p in ["cpu", "armv8_pmuv3_0"]:
+        if has_event_source(p):
+            return p
+    return None
+
+
+def get_syscall_numbers(fns):
+    """
+    Get a selection of integers for syscalls, by using the C preprocessor.
+    This relies on the system headers defining the numbers as macros.
+    """
+    try:
+        p = subprocess.Popen(["cc", "-E", "-"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    except FileNotFoundError:
+        # No system C compiler (possibly sandboxed / CI environment)
+        return [None] * len(fns)
+    p.stdin.write("#include <sys/syscall.h>\n".encode())
+    for fn in fns:
+        p.stdin.write(("SYS_%s\n" % fn).encode())
+    p.stdin.close()
+    lns = list(p.stdout)
+    ns = [int(x) for x in lns[-len(fns):]]
+    return ns
 
 
 def perf_max_counters():
@@ -600,7 +671,33 @@ def perf_max_counters():
     We use instructions as a proxy for general-purpose counters.
     The dedicated cycle counter is not included.
     """
-    if not perf_installed():
+    if not perf_tools_installed():
+        SYS_perf_event_open = get_syscall_numbers(["perf_event_open"])[0]
+        if SYS_perf_event_open is None:
+            return None
+        import ctypes
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.syscall.restype = ctypes.c_int
+        libc.syscall.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
+        PERF_TYPE_HARDWARE = 0
+        PERF_COUNT_HW_INSTRUCTIONS = 1
+        attr_size = 80
+        attr = struct.pack("IIQQQQQ", PERF_TYPE_HARDWARE, attr_size, PERF_COUNT_HW_INSTRUCTIONS, 0, 0, 0, 0x60) + ((attr_size-48) * b"\0")
+        assert len(attr) == attr_size
+        leader = -1
+        fds = []
+        for i in range(0, 31):
+            fd = libc.syscall(SYS_perf_event_open, attr, 0, -1, leader, 0)
+            if fd == -1:
+                if i == 0:
+                    #print("perf: can't create first counter: %s" % (os.strerror(ctypes.get_errno())))
+                    return None
+                for fd in fds:
+                    os.close(fd)
+                return i
+            fds.append(fd)
+            if leader == -1:
+                leader = fd
         return None
     for i in range(1, 31):
         # Use braces to ensure that counters are scheduled as a group.
@@ -852,7 +949,7 @@ def advice(s):
             yield ("huge pages not enabled", [])
     if not s.is_kernel_at_least((5, 0)):
         yield ("kernel version %s may lack support for new perf features" % s.get_kernel_version(), ["update kernel"])
-    if not perf_installed():
+    if not perf_tools_installed():
         # TBD: we could advise on how to install perf, e.g.
         #   Ubuntu: "sudo apt-get install linux-tools-`uname -r`"
         #   Amazon Linux: "yum install perf"
@@ -867,6 +964,8 @@ def advice(s):
         corrs = []
         if _is_arm and not s.has_irq("PMU"):
             corrs.append("ensure APIC table describes PMU interrupt")
+        if s.is_in_container() and not s.has_cap(CAP_PERFMON):
+            corrs.append("add CAP_PERFMON to container")
         yield ("Hardware perf events are not available", corrs)
     if not os.path.exists("/proc/kcore"):
         yield ("/proc/kcore not enabled, kernel profiling degraded", ["rebuild kernel with CONFIG_PROC_KCORE"])
@@ -946,7 +1045,7 @@ def show(s):
     print("  System memory:       %s" % (cpulist.memsize_str(s.system.phys_mem)))
     print("  Atomic operations:   %s" % (colorize(has_atomics(s.system))))
     (itype, n) = s.system_interconnect()
-    print("  interconnect:        %s x %u" % (colorize(itype), n))
+    print("  interconnect:        %s x %u" % (colorize(itype or "unknown"), n))
     n_nodes = s.system.n_nodes()
     print("  NUMA nodes:          %u" % n_nodes)
     if not s.kernel_config_enabled("CONFIG_NUMA"):
@@ -957,11 +1056,15 @@ def show(s):
     print("  Sockets:             %u" % (s.system.n_packages()))
     # Kernel features
     print("OS configuration:")
+    #print("  cgroup:              %s" % (file_data("/proc/self/cgroup")))
+    if s.is_in_container():
+        print("  In container:        %s" % (file_data("/etc/hostname")))
     print("  Kernel:              %s" % (s.get_kernel_version()))
     print("  config:              %s" % (colorize(kernel_config_file())))
     #print("  32-bit support:      %s" % (colorize(s.kernel_config_enabled("CONFIG_COMPAT"))))
     print("  build dir:           %s" % (colorize(kernel_build_dir())))
     print("  uses atomics:        %s" % (colorize(kernel_uses_atomics(s))))
+    print("  page size:           %s" % (cpulist.memsize_str(os.sysconf("SC_PAGE_SIZE"))))
     print("  huge pages:          %s" % (kernel_hugepages_str(s)))
     print("  transparent HP:      %s" % (kernel_thp(s) or "disabled"))
     if _is_arm:
@@ -975,7 +1078,7 @@ def show(s):
     print("  Mitigations:         %s" % (vulnerabilities_str(s.vulnerabilities())))
     # Perf features
     print("Performance features:")
-    perf_inst = perf_installed()
+    perf_inst = perf_tools_installed()
     print("  perf tools:          %s" % (colorize(perf_inst)))
     if perf_inst:
         print("  perf installed at:   %s" % (perf_binary()))
@@ -984,6 +1087,7 @@ def show(s):
     print("  perf sampling:       %s" % (colorize_greenred(perf_noninvasive_sampling(s))))
     print("  perf HW trace:       %s" % (colorize_greenred(perf_hardware_trace(s))))
     print("  perf paranoid:       %s" % (perf_event_paranoid()))   # 0 is not bad, it's good
+    print("  CAP_PERFMON:         %s" % (colorize_abled(s.has_cap(CAP_PERFMON))))
     print("  kptr_restrict:       %s" % (kptr_restrict()))
     print("  perf in userspace:   %s" % (colorize_abled(perf_user_access(s))))
     print("  interconnect perf:   %s" % (colorize_greenred(perf_interconnect(s))))
