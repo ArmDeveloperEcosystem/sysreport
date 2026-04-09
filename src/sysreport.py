@@ -1083,7 +1083,16 @@ def show(s):
     if perf_inst:
         print("  perf installed at:   %s" % (perf_binary()))
     print("  perf with OpenCSD:   %s" % (colorize(perf_binary_has_opencsd())))
-    print("  perf counters:       %s" % (s.perf_max_counters()))
+    counters = s.perf_max_counters()
+    # On heterogeneous systems with multiple CPU types (e.g. Arm big.LITTLE), perf
+    # redistributes events across PMUs rather than scheduling them as a single group.
+    # This means the group saturation point - which is how we detect the counter limit -
+    # is never reached, so detection returns None even though counters are available.
+    if counters is None and s.system.is_heterogeneous():
+        counter_str = "None (heterogeneous system - counter detection unreliable)"
+    else:
+        counter_str = str(counters)
+    print("  perf counters:       %s" % (counter_str))
     print("  perf sampling:       %s" % (colorize_greenred(perf_noninvasive_sampling(s))))
     print("  perf HW trace:       %s" % (colorize_greenred(perf_hardware_trace(s))))
     print("  perf paranoid:       %s" % (perf_event_paranoid()))   # 0 is not bad, it's good
